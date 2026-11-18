@@ -1,0 +1,6 @@
+/target
+mcp-guard.toml
+*.jsonl
+*.bak
+.env
+.env.*

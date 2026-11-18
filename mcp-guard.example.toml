@@ -1,0 +1,29 @@
+# mcp-guard.example.toml
+# Example configuration for mcp-guard.
+# Copy this file to ~/.mcp-guard/mcp-guard.toml and adjust as needed.
+
+# Local stdio MCP server example
+[server.filesystem]
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+allowed_dir = "/home/user/projects"
+allow_env = ["PATH", "HOME"]
+disabled_tools = ["write_file", "delete_file"]
+
+# Remote MCP server example (Streamable HTTP / SSE)
+[server.github]
+type = "remote"
+url = "https://api.githubcopilot.com/mcp/"
+disabled_tools = []
+
+[server.github.headers]
+Authorization = "Bearer {file:~/.config/mcp-guard/github-token.txt}"
+
+# Another remote example
+[server.context7]
+type = "remote"
+url = "https://mcp.context7.com/mcp"
+disabled_tools = []
+
+[server.context7.headers]
