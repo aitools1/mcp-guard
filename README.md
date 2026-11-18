@@ -1,6 +1,7 @@
 # mcp-guard
 
 [![CI](https://github.com/aitools1/mcp-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/aitools1/mcp-guard/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/aitools1/mcp-guard)](https://github.com/aitools1/mcp-guard/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **A transparent MCP stdio proxy, sandbox, and secret filter** — wraps any MCP server (local or remote) to enforce security policies, redact secrets, measure tool token usage, and provide a live TUI dashboard.
