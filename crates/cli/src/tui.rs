@@ -1,10 +1,10 @@
 use std::io;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event as CtEvent, KeyCode, KeyModifiers},
+    event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -101,6 +101,7 @@ struct App {
     sys: System,
     tick: u64,
     flash: Option<u64>,
+    quit: bool,
 }
 
 fn now_ms() -> u64 {
@@ -131,11 +132,9 @@ fn fmt_mem(bytes: u64) -> String {
 
 impl App {
     fn new(config_path: PathBuf) -> Self {
-        let mut sys = System::new();
-        sys.refresh_processes(
-            sysinfo::ProcessesToUpdate::All,
-            false,
-        );
+        // No full process scan at startup: the loop refreshes only the PIDs it
+        // cares about, and a full scan costs seconds on a busy Windows box.
+        let sys = System::new();
         let (cfg, config_error) = match GuardConfig::from_file(
             config_path.to_string_lossy().as_ref(),
         ) {
@@ -187,6 +186,7 @@ impl App {
             sys,
             tick: 0,
             flash: None,
+            quit: false,
         }
     }
 
@@ -299,7 +299,12 @@ impl App {
         }
     }
 
+    /// Tails `events.jsonl`: reads only bytes appended since the last call and
+    /// never consumes a half-written trailing line (it is retried next tick, so
+    /// a partially flushed event is not lost or shown as garbage).
     fn poll_events(&mut self) {
+        use std::io::{Read, Seek, SeekFrom};
+
         let Some(path) = self.events_path.clone() else {
             return;
         };
@@ -314,13 +319,21 @@ impl App {
             self.events_offset = 0;
             self.log.clear();
         }
-        use std::io::{Read, Seek, SeekFrom};
-        let _ = file.seek(SeekFrom::Start(self.events_offset));
+        if meta.len() == self.events_offset {
+            return;
+        }
+        if file.seek(SeekFrom::Start(self.events_offset)).is_err() {
+            return;
+        }
         let mut chunk = Vec::new();
         if file.read_to_end(&mut chunk).is_err() {
             return;
         }
-        let text = String::from_utf8_lossy(&chunk);
+        let Some(last_newline) = chunk.iter().rposition(|b| *b == b'\n') else {
+            return;
+        };
+        let consumed = last_newline + 1;
+        let text = String::from_utf8_lossy(&chunk[..consumed]);
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -336,10 +349,21 @@ impl App {
                 }
             }
         }
-        self.events_offset += chunk.len() as u64;
+        self.events_offset += consumed as u64;
     }
 
     fn refresh_metrics(&mut self) {
+        let pids: Vec<sysinfo::Pid> = self
+            .servers
+            .iter()
+            .flat_map(|s| [s.proxy_pid, s.child_pid])
+            .flatten()
+            .map(sysinfo::Pid::from_u32)
+            .collect();
+        if !pids.is_empty() {
+            self.sys
+                .refresh_processes(sysinfo::ProcessesToUpdate::Some(&pids), true);
+        }
         for s in self.servers.iter_mut() {
             s.cpu = 0;
             s.mem = 0;
@@ -390,12 +414,17 @@ impl App {
         let _ = self.save_config();
     }
 
-    fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        if mods.contains(KeyModifiers::CONTROL) {
+    fn handle_key(&mut self, key: KeyEvent) {
+        // Windows reports every keystroke twice (Press + Release); acting on the
+        // release made each toggle/tab cancel itself out.
+        if key.kind != KeyEventKind::Press {
             return;
         }
-        match code {
-            KeyCode::Char('q') | KeyCode::Esc => std::process::exit(0),
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return;
+        }
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::Servers => Focus::Log,
@@ -737,25 +766,132 @@ pub fn run_tui(config: PathBuf) -> Result<()> {
 }
 
 fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    loop {
-        app.poll_events();
-        if app.tick.is_multiple_of(13) {
-            app.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
-            app.refresh_metrics();
-        }
-        app.tick += 1;
+    const FRAME: Duration = Duration::from_millis(50);
+    const METRICS: Duration = Duration::from_millis(1000);
 
-        terminal.draw(|f| app.draw(f))?;
+    let mut last_draw = Instant::now()
+        .checked_sub(FRAME)
+        .unwrap_or_else(Instant::now);
+    let mut last_metrics = Instant::now()
+        .checked_sub(METRICS)
+        .unwrap_or_else(Instant::now);
 
-        let timeout = Duration::from_millis(150);
-        if event::poll(timeout)? {
+    while !app.quit {
+        // Input first, and never block on it: drain whatever is queued.
+        while event::poll(Duration::ZERO)? {
             match event::read()? {
-                CtEvent::Key(key) => {
-                    app.handle_key(key.code, key.modifiers);
+                CtEvent::Key(key) => app.handle_key(key),
+                CtEvent::Resize(_, _) => {
+                    last_draw = Instant::now()
+                        .checked_sub(FRAME)
+                        .unwrap_or_else(Instant::now);
                 }
-                CtEvent::Resize(_, _) => {}
                 _ => {}
             }
         }
+
+        // Cheap local file tail — every frame so the right pane stays live.
+        app.poll_events();
+
+        // Process metrics are the only expensive call: 1 Hz, watched PIDs only.
+        if last_metrics.elapsed() >= METRICS {
+            app.refresh_metrics();
+            last_metrics = Instant::now();
+        }
+
+        if last_draw.elapsed() >= FRAME {
+            terminal.draw(|f| app.draw(f))?;
+            last_draw = Instant::now();
+        }
+
+        // Short timeout keeps key latency low without burning a core.
+        if event::poll(Duration::from_millis(20))? {
+            continue;
+        }
+        app.tick += 1;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_app(tag: &str) -> (App, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mcp-guard-tui-{}-{tag}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let cfg = dir.join("mcp-guard.toml");
+        fs::write(
+            &cfg,
+            "[server.demo]\ntype = \"stdio\"\ncommand = \"echo\"\nargs = []\n",
+        )
+        .unwrap();
+        (App::new(cfg.clone()), cfg)
+    }
+
+    fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
+    }
+
+    #[test]
+    fn test_release_events_are_ignored() {
+        let (mut app, _cfg) = temp_app("release");
+        app.handle_key(key(KeyCode::Tab, KeyEventKind::Release));
+        assert_eq!(app.focus, Focus::Servers);
+        app.handle_key(key(KeyCode::Tab, KeyEventKind::Press));
+        assert_eq!(app.focus, Focus::Log);
+    }
+
+    #[test]
+    fn test_enter_expands_and_space_toggles_tool() {
+        let (mut app, cfg) = temp_app("toggle");
+        app.apply_event(&Event::ToolsListed {
+            ts_ms: 1,
+            server: "demo".into(),
+            tools: 1,
+            est_tokens: 10,
+            names: vec!["echo".into()],
+        });
+
+        app.handle_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(app.servers[0].expanded);
+        assert_eq!(app.rows().len(), 2);
+
+        app.sel = 1;
+        app.handle_key(key(KeyCode::Char(' '), KeyEventKind::Press));
+        assert_eq!(app.servers[0].disabled, vec!["echo".to_string()]);
+        assert!(fs::read_to_string(&cfg).unwrap().contains("disabled_tools = [\"echo\"]"));
+
+        app.handle_key(key(KeyCode::Char(' '), KeyEventKind::Press));
+        assert!(app.servers[0].disabled.is_empty());
+    }
+
+    #[test]
+    fn test_poll_events_tails_only_complete_lines() {
+        let (mut app, _cfg) = temp_app("tail");
+        let path = std::env::temp_dir()
+            .join(format!("mcp-guard-tui-{}-tail.jsonl", std::process::id()));
+        let _ = fs::remove_file(&path);
+        app.events_path = Some(path.clone());
+
+        let ev = r#"{"event":"server_started","ts_ms":1,"server":"demo","proxy_pid":1,"child_pid":2}"#;
+        fs::write(&path, ev).unwrap();
+        app.poll_events();
+        assert!(app.log.is_empty(), "half-written line must wait");
+
+        fs::write(&path, format!("{ev}\n")).unwrap();
+        app.poll_events();
+        assert_eq!(app.log.len(), 1);
+        assert!(app.servers[0].running);
+
+        app.poll_events();
+        assert_eq!(app.log.len(), 1, "no duplicate reads");
+
+        fs::write(&path, format!("{ev}\n{ev}\n")).unwrap();
+        app.poll_events();
+        assert_eq!(app.log.len(), 2);
+        let _ = fs::remove_file(&path);
     }
 }
