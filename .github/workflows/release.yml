@@ -11,6 +11,7 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +25,9 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             archive: mcp-guard-aarch64-apple-darwin.tar.gz
+            # macOS runners are unavailable on accounts without macOS billing;
+            # keep the leg so the asset appears automatically once they are.
+            optional: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -51,6 +55,7 @@ jobs:
 
   release:
     needs: build
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -60,6 +65,7 @@ jobs:
       - name: Checksums
         run: |
           cd dist
+          ls -l
           sha256sum *.zip *.tar.gz | tee SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:

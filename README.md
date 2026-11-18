@@ -31,7 +31,8 @@
 | macOS (Apple Silicon) | `mcp-guard-aarch64-apple-darwin.tar.gz` |
 
 Every release ships `SHA256SUMS` — verify with `sha256sum -c SHA256SUMS` (Windows:
-`Get-FileHash <file> -Algorithm SHA256`).
+`Get-FileHash <file> -Algorithm SHA256`). If a platform asset is missing from a release (e.g. macOS
+was skipped because no macOS runner was available), build from source with the command below.
 
 **From source (requires Rust)**:
 
