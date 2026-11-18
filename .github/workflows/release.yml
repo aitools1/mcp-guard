@@ -21,7 +21,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: mcp-guard-x86_64-unknown-linux-gnu.tar.gz
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
             archive: mcp-guard-aarch64-apple-darwin.tar.gz
     steps:
