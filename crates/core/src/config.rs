@@ -256,6 +256,19 @@ pub fn build_guard_config(hits: &[AgentConfigHit], workdir: &Path) -> GuardConfi
     GuardConfig { server: servers }
 }
 
+/// Merge freshly scanned servers into an existing config, keeping entries the
+/// scan skipped (servers already wrapped by `mcp-guard` are not re-imported, so
+/// without this a re-import would drop them).
+pub fn merge_servers(fresh: GuardConfig, existing: Option<GuardConfig>) -> GuardConfig {
+    let mut merged = fresh;
+    if let Some(old) = existing {
+        for (name, srv) in old.server {
+            merged.server.entry(name).or_insert(srv);
+        }
+    }
+    merged
+}
+
 /// User home directory (USERPROFILE on Windows, HOME elsewhere).
 pub fn home_dir() -> Option<PathBuf> {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
@@ -457,6 +470,44 @@ disabled_tools = ["write_file"]
         assert!(toml_out.contains("allow_env = [\"PATH\", \"HOME\"]"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_merge_servers_keeps_unscanned_entries() {
+        let fresh = GuardConfig {
+            server: HashMap::from([(
+                "new".to_string(),
+                ServerConfig::Stdio {
+                    command: "npx".into(),
+                    args: vec![],
+                    allowed_dir: None,
+                    allow_env: vec![],
+                    disabled_tools: vec![],
+                },
+            )]),
+        };
+        let existing = GuardConfig {
+            server: HashMap::from([(
+                "wrapped".to_string(),
+                ServerConfig::Stdio {
+                    command: "npx".into(),
+                    args: vec!["old".into()],
+                    allowed_dir: None,
+                    allow_env: vec![],
+                    disabled_tools: vec![],
+                },
+            )]),
+        };
+        let merged = merge_servers(fresh, Some(existing));
+        assert_eq!(merged.server.len(), 2);
+        assert!(merged.server.contains_key("new"));
+        assert!(merged.server.contains_key("wrapped"));
+        assert_eq!(
+            merge_servers(GuardConfig { server: HashMap::new() }, None)
+                .server
+                .len(),
+            0
+        );
     }
 
     #[test]

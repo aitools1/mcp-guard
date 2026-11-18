@@ -4,8 +4,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use mcp_guard_core::config::{
-    build_guard_config, default_config_candidates, global_config_path, resolve_config_path,
-    scan_config_files, GuardConfig,
+    build_guard_config, default_config_candidates, global_config_path, merge_servers,
+    resolve_config_path, scan_config_files, GuardConfig,
 };
 use mcp_guard_core::events::{Event, EventLog};
 use mcp_guard_core::proxy::{Proxy, RemoteProxy};
@@ -133,7 +133,17 @@ fn import(output: Option<PathBuf>, dir: Option<PathBuf>) -> Result<()> {
         );
     }
 
-    let cfg = build_guard_config(&hits, &project_dir);
+    let fresh = build_guard_config(&hits, &project_dir);
+    let existing = output_path
+        .to_str()
+        .and_then(|p| GuardConfig::from_file(p).ok());
+    let cfg = merge_servers(fresh, existing);
+    if cfg.server.is_empty() {
+        anyhow::bail!(
+            "nothing to import: no usable MCP servers found, {} left untouched",
+            output_path.display()
+        );
+    }
     let toml_out = cfg.to_toml_string()?;
     std::fs::write(&output_path, toml_out)
         .with_context(|| format!("failed to write {}", output_path.display()))?;
