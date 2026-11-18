@@ -466,7 +466,7 @@ disabled_tools = ["write_file"]
                 "servers": {
                     "context7": { "type": "local", "command": ["mcp-guard", "run", "context7"] },
                     "mslearn": { "type": "local", "command": ["mcp-guard.exe", "run", "mslearn"] },
-                    "github": { "type": "local", "command": ["C:\\Users\\user\\.cargo\\bin\\mcp-guard.exe", "run", "github"] },
+                    "github": { "type": "local", "command": ["/home/user/.cargo/bin/mcp-guard.exe", "run", "github"] },
                     "fs": { "type": "local", "command": ["npx", "-y", "fs-srv"] }
                 }
             }
