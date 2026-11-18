@@ -195,7 +195,7 @@ impl App {
         let mut rows: Vec<(usize, RowKind)> = Vec::new();
         for (i, s) in self.servers.iter().enumerate() {
             rows.push((i, RowKind::Server(i)));
-            if s.expanded && s.server_type == "stdio" {
+            if s.expanded {
                 for t in &s.known_tools {
                     rows.push((i, RowKind::Tool(t.clone())));
                 }
@@ -415,9 +415,9 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        // Windows reports every keystroke twice (Press + Release); acting on the
-        // release made each toggle/tab cancel itself out.
-        if key.kind != KeyEventKind::Press {
+        // Windows also reports Release, and some terminals repeat as `Repeat`;
+        // acting on the release made each toggle/tab cancel itself out.
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -585,7 +585,11 @@ impl App {
                     RowKind::Tool(name) => {
                         let s = &self.servers[*srv_idx];
                         let disabled = s.disabled.iter().any(|d| d == name);
-                        let mark = if disabled { "[x]" } else { "[ ]" };
+                        let (badge, badge_style) = if disabled {
+                            ("[OFF]", Style::default().fg(RED))
+                        } else {
+                            ("[ON] ", Style::default().fg(GREEN))
+                        };
                         let prefix = if highlight { ">>" } else { "  " };
                         let prefix_style = if highlight {
                             Style::default().fg(ACCENT)
@@ -594,8 +598,11 @@ impl App {
                         };
                         ListItem::new(vec![Line::from(vec![
                             Span::styled(format!("{prefix}  "), prefix_style),
-                            Span::styled(mark, Style::default().fg(if disabled { RED } else { DIM })),
-                            Span::styled(format!(" {name}"), Style::default().fg(if disabled { RED } else { FG })),
+                            Span::styled(badge, badge_style),
+                            Span::styled(
+                                format!(" {name}"),
+                                Style::default().fg(if disabled { DIM } else { FG }),
+                            ),
                         ])])
                     }
                     RowKind::NoTools => ListItem::new(vec![Line::from(Span::styled(
@@ -835,6 +842,21 @@ mod tests {
         KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
     }
 
+    fn render_text(app: &App, width: u16, height: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     #[test]
     fn test_release_events_are_ignored() {
         let (mut app, _cfg) = temp_app("release");
@@ -850,22 +872,63 @@ mod tests {
         app.apply_event(&Event::ToolsListed {
             ts_ms: 1,
             server: "demo".into(),
-            tools: 1,
+            tools: 2,
             est_tokens: 10,
-            names: vec!["echo".into()],
+            names: vec!["echo".into(), "ping".into()],
         });
 
         app.handle_key(key(KeyCode::Enter, KeyEventKind::Press));
         assert!(app.servers[0].expanded);
-        assert_eq!(app.rows().len(), 2);
+        assert_eq!(app.rows().len(), 3);
+        let screen = render_text(&app, 100, 20);
+        assert_eq!(screen.matches("[ON]").count(), 2);
+        assert!(!screen.contains("dbg:"));
 
         app.sel = 1;
         app.handle_key(key(KeyCode::Char(' '), KeyEventKind::Press));
         assert_eq!(app.servers[0].disabled, vec!["echo".to_string()]);
         assert!(fs::read_to_string(&cfg).unwrap().contains("disabled_tools = [\"echo\"]"));
 
+        let screen = render_text(&app, 100, 20);
+        assert!(screen.contains("[OFF]"));
+        assert_eq!(screen.matches("[ON]").count(), 1);
+
         app.handle_key(key(KeyCode::Char(' '), KeyEventKind::Press));
         assert!(app.servers[0].disabled.is_empty());
+        assert_eq!(render_text(&app, 100, 20).matches("[ON]").count(), 2);
+    }
+
+    #[test]
+    fn test_remote_server_tools_expand() {
+        let dir = std::env::temp_dir().join(format!("mcp-guard-tui-{}-remote", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let cfg = dir.join("mcp-guard.toml");
+        fs::write(
+            &cfg,
+            "[server.github]\ntype = \"remote\"\nurl = \"https://example.invalid/mcp\"\n",
+        )
+        .unwrap();
+        let mut app = App::new(cfg);
+        assert_eq!(app.servers[0].server_type, "remote");
+
+        app.apply_event(&Event::ToolsListed {
+            ts_ms: 1,
+            server: "github".into(),
+            tools: 2,
+            est_tokens: 10,
+            names: vec!["a".into(), "b".into()],
+        });
+        app.apply_event(&Event::ServerStopped {
+            ts_ms: 2,
+            server: "github".into(),
+        });
+        assert_eq!(app.servers[0].known_tools.len(), 2, "stop keeps tools");
+
+        app.handle_key(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(app.servers[0].expanded);
+        let rows = app.rows();
+        assert_eq!(rows.len(), 3, "remote server must expose tool rows");
+        assert!(matches!(rows[1].1, RowKind::Tool(_)));
     }
 
     #[test]
@@ -893,5 +956,164 @@ mod tests {
         app.poll_events();
         assert_eq!(app.log.len(), 2);
         let _ = fs::remove_file(&path);
+    }
+
+    /// Renders a rich demo state to `docs/preview.html`; the PNG in the README
+    /// is a headless-browser screenshot of that file. Not part of the test run.
+    #[test]
+    #[ignore = "writes docs/preview.html for the README screenshot"]
+    fn render_preview_html() {
+        let app = preview_app();
+        let (w, h) = (150u16, 24u16);
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let mut body = String::new();
+        for y in 0..buf.area.height {
+            let mut run = String::new();
+            let mut style = String::new();
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                let cell_style = format!(
+                    "color:{};background:{};{}",
+                    css(cell.fg),
+                    css(cell.bg),
+                    if cell.modifier.contains(Modifier::BOLD) {
+                        "font-weight:600;"
+                    } else {
+                        ""
+                    }
+                );
+                if cell_style != style && !run.is_empty() {
+                    body.push_str(&format!("<span style=\"{style}\">{}</span>", esc(&run)));
+                    run.clear();
+                }
+                style = cell_style;
+                run.push_str(cell.symbol());
+            }
+            body.push_str(&format!("<span style=\"{style}\">{}</span>\n", esc(&run)));
+        }
+
+        let html = format!(
+            r#"<!doctype html><html><head><meta charset="utf-8"><title>mcp-guard</title><style>
+html,body{{margin:0;padding:0;background:#101218;}}
+.frame{{padding:26px;}}
+.win{{border-radius:11px;overflow:hidden;background:#181a20;border:1px solid #2b3040;
+box-shadow:0 26px 70px rgba(0,0,0,.65);}}
+.bar{{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#20232c;
+border-bottom:1px solid #2b3040;font:12.5px 'Segoe UI',sans-serif;color:#8b92a4;}}
+.dot{{width:11px;height:11px;border-radius:50%;}}
+.t{{flex:1;text-align:center;letter-spacing:.3px;}}
+pre{{margin:0;padding:16px 18px;font:13.5px/1.3 'Cascadia Mono','Consolas','Courier New',monospace;
+color:#c8cdd7;white-space:pre;}}
+</style></head><body><div class="frame"><div class="win">
+<div class="bar"><span class="dot" style="background:#ff5f57"></span>
+<span class="dot" style="background:#febc2e"></span>
+<span class="dot" style="background:#28c840"></span>
+<span class="t">mcp-guard — MCP proxy dashboard</span><span style="width:49px"></span></div>
+<pre>{body}</pre></div></div></body></html>"#
+        );
+
+        let out = std::path::Path::new("../../docs/preview.html");
+        if let Some(dir) = out.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        fs::write(out, html).unwrap();
+        eprintln!("wrote {}", out.display());
+    }
+
+    fn css(color: Color) -> String {
+        match color {
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Reset => "inherit".to_string(),
+            Color::Black => "#000000".to_string(),
+            Color::White => "#ffffff".to_string(),
+            other => format!("{other:?}").to_lowercase(),
+        }
+    }
+
+    fn esc(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
+
+    fn preview_app() -> App {
+        use mcp_guard_core::events::CallStatus;
+        let dir = std::env::temp_dir().join(format!("mcp-guard-preview-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let cfg = dir.join("mcp-guard.toml");
+        fs::write(
+            &cfg,
+            "[server.context7]\ntype = \"remote\"\nurl = \"https://mcp.context7.com/mcp\"\n\n\
+             [server.github]\ntype = \"remote\"\nurl = \"https://api.githubcopilot.com/mcp/\"\n\n\
+             [server.mslearn]\ntype = \"remote\"\nurl = \"https://learn.microsoft.com/api/mcp\"\n",
+        )
+        .unwrap();
+        let mut app = App::new(cfg);
+        app.events_path = None;
+        let now = now_ms();
+        let gh_tools: Vec<String> = [
+            "get_me",
+            "search_issues",
+            "search_code",
+            "list_issues",
+            "get_pull_request",
+            "create_pull_request",
+            "merge_pull_request",
+            "delete_branch",
+            "push_files",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let events = vec![
+            Event::ServerStarted { ts_ms: now - 9_400, server: "context7".into(), proxy_pid: 4211, child_pid: 4211 },
+            Event::ToolsListed {
+                ts_ms: now - 9_200,
+                server: "context7".into(),
+                tools: 2,
+                est_tokens: 1307,
+                names: vec!["resolve-library-id".into(), "query-docs".into()],
+            },
+            Event::ServerStopped { ts_ms: now - 9_000, server: "context7".into() },
+            Event::ServerStarted { ts_ms: now - 6_100, server: "mslearn".into(), proxy_pid: 4318, child_pid: 4318 },
+            Event::ToolsListed {
+                ts_ms: now - 6_000,
+                server: "mslearn".into(),
+                tools: 3,
+                est_tokens: 1217,
+                names: vec![
+                    "microsoft_docs_search".into(),
+                    "microsoft_docs_fetch".into(),
+                    "microsoft_code_sample_search".into(),
+                ],
+            },
+            Event::ServerStarted { ts_ms: now - 4_600, server: "github".into(), proxy_pid: 4471, child_pid: 4471 },
+            Event::ToolsListed {
+                ts_ms: now - 4_500,
+                server: "github".into(),
+                tools: 46,
+                est_tokens: 31712,
+                names: gh_tools.clone(),
+            },
+            Event::ToolCalled { ts_ms: now - 2_200, server: "github".into(), tool: "get_me".into(), latency_ms: 88, status: CallStatus::Ok },
+            Event::ToolCalled { ts_ms: now - 1_100, server: "github".into(), tool: "search_issues".into(), latency_ms: 142, status: CallStatus::Ok },
+            Event::SecretRedacted { ts_ms: now - 900, server: "github".into(), secret_type: "GITHUB_PAT".into() },
+            Event::ToolCalled { ts_ms: now - 400, server: "github".into(), tool: "merge_pull_request".into(), latency_ms: 0, status: CallStatus::Blocked },
+        ];
+        for ev in &events {
+            app.apply_event(ev);
+        }
+        if let Some(s) = app.servers.iter_mut().find(|s| s.name == "github") {
+            s.expanded = true;
+            s.disabled = vec!["delete_branch".into(), "merge_pull_request".into()];
+        }
+        for s in app.servers.iter_mut().filter(|s| s.running) {
+            // `mem` is bytes (sysinfo), formatted as MB by `fmt_mem`.
+            s.mem = if s.name == "github" { 37_600_000 } else { 13_200_000 };
+        }
+        app.sel = 1;
+        app
     }
 }

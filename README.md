@@ -5,6 +5,8 @@
 
 **A transparent MCP stdio proxy, sandbox, and secret filter** — wraps any MCP server (local or remote) to enforce security policies, redact secrets, measure tool token usage, and provide a live TUI dashboard.
 
+![mcp-guard dashboard](docs/screenshot.png)
+
 ## Why mcp-guard?
 
 | Feature | Problem | Solution |
