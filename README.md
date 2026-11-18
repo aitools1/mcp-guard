@@ -18,17 +18,37 @@
 
 ## Quick Start
 
-```bash
-# 1. Install
-cargo install --git https://github.com/aitools1/mcp-guard --locked
+### 1. Install
 
-# 2. Scan existing MCP configs (OpenCode, Claude, Cursor) and create global config
+**Prebuilt binaries (no Rust required)** — download the archive for your OS from
+[Releases](https://github.com/aitools1/mcp-guard/releases/latest), unpack it and put `mcp-guard`
+(Windows: `mcp-guard.exe`) somewhere on your `PATH`:
+
+| Platform | Asset |
+| --- | --- |
+| Windows x86_64 | `mcp-guard-x86_64-pc-windows-msvc.zip` |
+| Linux x86_64 | `mcp-guard-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS (Apple Silicon) | `mcp-guard-aarch64-apple-darwin.tar.gz` |
+
+Every release ships `SHA256SUMS` — verify with `sha256sum -c SHA256SUMS` (Windows:
+`Get-FileHash <file> -Algorithm SHA256`).
+
+**From source (requires Rust)**:
+
+```bash
+cargo install --git https://github.com/aitools1/mcp-guard --locked
+```
+
+### 2. Wire it up
+
+```bash
+# Scan existing MCP configs (OpenCode, Claude, Cursor) and create global config
 mcp-guard import
 
-# 3. Run a proxied server (plug into agent config instead of raw command)
+# Run a proxied server (plug into agent config instead of raw command)
 mcp-guard run filesystem
 
-# 4. Open the live dashboard
+# Open the live dashboard
 mcp-guard ui
 ```
 
@@ -97,18 +117,35 @@ Authorization = "Bearer {file:~/.config/mcp-guard/github-token.txt}"
 
 ### OpenCode Integration
 
-After `mcp-guard import`, add to `~/.config/opencode/opencode.json`:
+After `mcp-guard import`, point OpenCode at the proxy. Two shapes are accepted depending on your
+OpenCode version — pick the one your `opencode.json` already uses:
 
 ```json
 {
-  "mcpServers": {
+  "mcp": {
     "filesystem": {
-      "command": "mcp-guard",
-      "args": ["run", "filesystem"]
+      "type": "local",
+      "command": ["mcp-guard", "run", "filesystem"]
     }
   }
 }
 ```
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "type": "local",
+        "command": ["mcp-guard", "run", "filesystem"]
+      }
+    }
+  }
+}
+```
+
+Remote servers keep working the same way: `mcp-guard run github` replaces the raw
+`"type": "remote", "url": ...` entry, so redaction and telemetry apply to HTTP/SSE traffic too.
 
 ## TUI Dashboard (`mcp-guard ui`)
 
@@ -122,8 +159,8 @@ After `mcp-guard import`, add to `~/.config/opencode/opencode.json`:
 │   echo                 │ [0008s] ⚠ github/leak SECRET REDACTED    │
 │   leak                 │ [0003s] ⚠ filesystem/danger BLOCKED      │
 │ █ github    RUNNING    │                                          │
-│   [x] search           │                                          │
-│   [ ] create_pr        │                                          │
+│   [OFF] search         │                                          │
+│   [ON]  create_pr      │                                          │
 ├────────────────────────┴──────────────────────────────────────────┤
 │ tab switch · j/k move · enter/space toggle tool · q quit          │
 └────────────────────────────────────────────────────────────────────┘
