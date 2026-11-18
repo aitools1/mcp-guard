@@ -12,28 +12,26 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 fn bin_path(target: &str, is_example: bool) -> String {
-    // Test exe lives in <workspace>/target/debug/deps/, binaries in
-    // <workspace>/target/debug/ — derive the real location from current_exe().
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(debug) = exe.parent().and_then(|p| p.parent()) {
-            let candidate = if is_example {
-                debug.join("examples").join(format!("{target}{}", std::env::consts::EXE_SUFFIX))
-            } else {
-                debug.join(format!("{target}{}", std::env::consts::EXE_SUFFIX))
-            };
-            if candidate.exists() {
-                return candidate.to_string_lossy().into_owned();
-            }
-        }
+    // `CARGO_BIN_EXE_<bin>` points at the real built binary in this target
+    // directory, which also gives us the directory to find the example in.
+    if target == "mcp-guard" {
+        return env!("CARGO_BIN_EXE_mcp-guard").to_string();
     }
-    let env_name = target.replace('-', "_");
-    std::env::var(format!("CARGO_BIN_EXE_{env_name}")).unwrap_or_else(|_| {
-        if is_example {
-            format!("target/debug/examples/{target}{}", std::env::consts::EXE_SUFFIX)
-        } else {
-            format!("target/debug/{target}{}", std::env::consts::EXE_SUFFIX)
-        }
-    })
+    let guard = std::path::Path::new(env!("CARGO_BIN_EXE_mcp-guard"));
+    let debug_dir = guard.parent().unwrap_or(std::path::Path::new("target/debug"));
+    let candidate = if is_example {
+        debug_dir
+            .join("examples")
+            .join(format!("{target}{}", std::env::consts::EXE_SUFFIX))
+    } else {
+        debug_dir.join(format!("{target}{}", std::env::consts::EXE_SUFFIX))
+    };
+    assert!(
+        candidate.exists(),
+        "missing {} — build it first with `cargo build --examples`",
+        candidate.display()
+    );
+    candidate.to_string_lossy().into_owned()
 }
 
 fn json_line(v: &serde_json::Value) -> String {
