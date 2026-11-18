@@ -6,10 +6,11 @@
 //! Tools: `echo` (ok), `leak` (response contains a fake OpenAI key + Bearer
 //! token to exercise redaction), `danger` (normally disabled in test config).
 
+#![allow(clippy::unwrap_used)]
+
 use std::io::{self, Write};
 
 use serde_json::{json, Value};
-
 fn main() {
     let mut line = String::new();
     let stdin = io::stdin();
@@ -123,7 +124,11 @@ fn main() {
         };
 
         eprintln!("[mock-mcp] handled {method}");
-        let _ = writeln!(out, "{}", serde_json::to_string(&resp).unwrap());
+        let Ok(serialized) = serde_json::to_string(&resp) else {
+            eprintln!("[mock-mcp] failed to serialize response");
+            continue;
+        };
+        let _ = writeln!(out, "{serialized}");
         let _ = out.flush();
     }
 

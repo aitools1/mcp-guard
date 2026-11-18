@@ -2,6 +2,8 @@
 //! child over piped stdio. Verifies disabled-tools filtering, secret
 //! redaction, blocked-call error responses and event telemetry.
 
+#![allow(clippy::unwrap_used)]
+
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

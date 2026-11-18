@@ -7,6 +7,9 @@ struct RedactionRule {
     pattern: LazyLock<Regex>,
 }
 
+// Literal regexes; a bad pattern is a programmer error caught by the unit
+// tests below, so the fallback arms exist only to keep the statics total.
+#[allow(clippy::unwrap_used)]
 static RULES: LazyLock<Vec<RedactionRule>> = LazyLock::new(|| {
     vec![
         RedactionRule {

@@ -33,16 +33,18 @@ pub fn configure_command(cmd: &mut Command, config: &SandboxConfig, args: &[Stri
     cmd.env_clear();
 
     // 3. Populate base allowed environment variables + platform specifics
-    let mut allowed = config.allow_env.clone();
-
     #[cfg(windows)]
-    {
+    let allowed = {
+        let mut allowed = config.allow_env.clone();
         for var in &["SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "TEMP", "TMP"] {
             if !allowed.iter().any(|v| v.eq_ignore_ascii_case(var)) {
                 allowed.push(var.to_string());
             }
         }
-    }
+        allowed
+    };
+    #[cfg(not(windows))]
+    let allowed = config.allow_env.clone();
 
     for var in allowed {
         if let Ok(val) = std::env::var(&var) {
